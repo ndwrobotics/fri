@@ -151,15 +151,23 @@ impl FriProver {
         // NOT ZERO KNOWLEDGE
         // values is list where the entries are of the form hash(x, f(x)) for each x in the domain
         let values = domain.into_iter().map(
-            |x| value_to_merkle_leaf(&polynomial, x)
+            |x| value_to_merkle_leaf(polynomial, x)
         ).collect::<Vec<[u8; 32]>>();
         
         let merkle_tree = MerkleTree::<Sha256>::from_leaves(&values);
         merkle_tree
     }
 
-    fn execute_prover_commit_round(round_index: usize, verifier_challenge: F){
-        panic!("Not implemented");
+    fn execute_prover_commit_round(&mut self, round_index: usize, verifier_challenge: F) -> [u8; 32] {
+        println!("Prover round: {}", round_index);
+        let folded_polynomial = self.fold_polynomial(&self.f[round_index], verifier_challenge);
+        println!("Folded polynomial: {:?}", folded_polynomial);
+        let polynomial_merkle_tree = self.commit_polynomial(&folded_polynomial, &self.params.smooth_multiplicative_subgroup[round_index]);
+        self.f.push(folded_polynomial);
+        let polynomial_commitment = polynomial_merkle_tree.root().unwrap();
+        println!("Commitment: {:?}", polynomial_commitment);
+        self.f_merkle_tree.push(polynomial_merkle_tree); // TODO optimize final round
+        return polynomial_commitment;
     }
 }
 
@@ -170,7 +178,6 @@ pub struct FriVerifier {
     f_merkle_root: Vec<[u8; 32]>,
     rng: StdRng,
     verifier_challenge: Vec<F>,
-
 }
 
 impl FriVerifier {
@@ -190,8 +197,66 @@ impl FriVerifier {
         }
     }
 
-    fn execute_verifier_commit_round(round_index: usize){
-        panic!("Not implemented");
+    fn execute_verifier_commit_round(&mut self, round_index: usize, merkle_root: Option<[u8; 32]>) -> Option<F> {
+        println!("Verifier round: {}", round_index);
+        if round_index > 0 {
+            self.f_merkle_root.push(merkle_root.unwrap());
+        }
+        if round_index < self.params.num_rounds {
+            let verifier_challenge = F::rand(&mut self.rng);
+            println!("Verifier challenge: {:?}", verifier_challenge);
+            self.verifier_challenge.push(verifier_challenge);
+            return Some(verifier_challenge);
+        } else {
+            return None;
+        }
+    }
+}
+
+
+pub struct FriProtocol {
+    prover: FriProver,
+    verifier: FriVerifier,
+    polynomial: DensePolynomial<F>,
+}
+
+impl FriProtocol {
+    fn new(polynomial: DensePolynomial<F>, eta: u32, rate_parameter: u32, degree_log_bound: u32) -> Self {
+        let params = Arc::new(FriParams::new(eta, rate_parameter, degree_log_bound));
+        let prover = FriProver::new(params.clone(), polynomial.clone());
+        let verifier = FriVerifier::new(params);
+        FriProtocol {
+            prover,
+            verifier,
+            polynomial,
+        }
+    }
+
+    fn run(&mut self) {
+        // PHASE 1: Commitment.
+
+        // Round 0:
+        // Verifier generates challenge.
+        let verifier_challenge = self.verifier.execute_verifier_commit_round(0, None).unwrap();
+
+        // Prover accepts verifier challenge and generates commitment to the first folded polynomial.
+        let mut polynomial_commitment = self.prover.execute_prover_commit_round(0, verifier_challenge);
+
+        // Rounds 1 through num_rounds - 1:
+        for round_index in 1..self.prover.params.num_rounds {
+            
+            // Verifier accepts commitment from the previous round and sends another challenge.
+            let verifier_challenge = self.verifier.execute_verifier_commit_round(round_index, Some(polynomial_commitment)).unwrap();
+
+            // Prover accepts new verifier challenge and sends the next commitment.
+            polynomial_commitment = self.prover.execute_prover_commit_round(round_index, verifier_challenge);
+        }
+
+        // After round num_rounds - 1:
+        // Verifier accepts commitment from last round.
+        self.verifier.execute_verifier_commit_round(self.prover.params.num_rounds, Some(polynomial_commitment));
+
+
     }
 }
 
@@ -200,7 +265,7 @@ impl FriVerifier {
 /// to a format suitable for insertion in a Merkle tree.
 fn value_to_merkle_leaf(polynomial: &DensePolynomial<F>, point: &F ) -> [u8; 32] {
     Sha256::hash(
-        vec![*point, polynomial.evaluate(point)].into_iter().flat_map(
+        vec![*point, polynomial.evaluate(point)].iter().flat_map(
             |value| value.into_bigint().to_bytes_be()
         ).collect::<Vec<u8>>().as_slice()
     )
@@ -218,12 +283,12 @@ fn main() {
     let eta = 2;
     let rate_parameter = 2;
     let degree_log_bound = 4;
-    let params = FriParams::new(eta, rate_parameter, degree_log_bound);
 
     let polynomial = DensePolynomial::<F>::from_coefficients_vec(
         (0..16).map(|x| F::from(x)).collect()
     );
-    let prover = FriProver::new()
+    let mut fri_protocol = FriProtocol::new(polynomial, eta, rate_parameter, degree_log_bound);
+    fri_protocol.run();
 
 }
 
