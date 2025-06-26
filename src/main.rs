@@ -7,7 +7,11 @@ use ark_ff::BigInteger;
 use ark_poly::univariate::DensePolynomial;
 use ark_poly::{DenseUVPolynomial, Polynomial};
 
+use ark_std::rand::rngs::StdRng;
+use ark_std::rand::{Rng, SeedableRng};
 use rs_merkle::{MerkleTree, MerkleProof, Hasher, algorithms::Sha256};
+
+use rand_core::{TryRngCore, OsRng};
 
 #[derive(MontConfig)]
 #[modulus = "18446744069414584321"] // p = 2^64 - 2^32 + 1
@@ -22,6 +26,7 @@ pub type F = Fp64<MontBackend<FConfig, 1>>;
 pub struct FriParams {
     n: u32,
     eta: u32,
+    degree_log_bound: u32,
     two_to_the_eta: usize,
     rate_parameter: u32,
     num_rounds: usize,
@@ -80,6 +85,7 @@ impl FriParams {
         FriParams {
             n,
             eta,
+            degree_log_bound,
             two_to_the_eta,
             rate_parameter,
             num_rounds,
@@ -98,6 +104,9 @@ pub struct FriProver {
 
 impl FriProver {
     fn new(params: Arc<FriParams>, polynomial: DensePolynomial<F>) -> FriProver {
+
+        assert!(polynomial.degree() < (1 << params.degree_log_bound));
+
         let mut prover = FriProver {
             params,
             f: vec![polynomial],
@@ -149,12 +158,42 @@ impl FriProver {
         merkle_tree
     }
 
-    fn execute_prover_round(round_index: usize, verifier_challenge: F){
+    fn execute_prover_commit_round(round_index: usize, verifier_challenge: F){
         panic!("Not implemented");
     }
 }
 
 
+
+pub struct FriVerifier {
+    params: Arc<FriParams>,
+    f_merkle_root: Vec<[u8; 32]>,
+    rng: StdRng,
+    verifier_challenge: Vec<F>,
+
+}
+
+impl FriVerifier {
+    fn new(params: Arc<FriParams>) -> Self {
+        let f_merkle_root = Vec::new();
+        // Only cryptographically secure RNG for us
+        let mut seed = [0u8; 32];
+        OsRng.try_fill_bytes(&mut seed).unwrap();
+        
+        let rng = StdRng::from_seed(seed);
+        let verifier_challenge = Vec::new();
+        FriVerifier {
+            params,
+            f_merkle_root,
+            rng,
+            verifier_challenge,
+        }
+    }
+
+    fn execute_verifier_commit_round(round_index: usize){
+        panic!("Not implemented");
+    }
+}
 
 
 /// Deterministic function used to deterministically convert the value of a polynomial at a point
@@ -176,12 +215,16 @@ fn value_to_merkle_leaf(polynomial: &DensePolynomial<F>, point: &F ) -> [u8; 32]
 
 
 fn main() {
-    let mut rng = ark_std::test_rng();
-    let a = F::rand(&mut rng);
-    println!("a: {}", a);
-    let params = FriParams::new(2, 2, 4);
-    println!("params.q: {:?}", params.q);
-    println!("params: {:?}", params);
+    let eta = 2;
+    let rate_parameter = 2;
+    let degree_log_bound = 4;
+    let params = FriParams::new(eta, rate_parameter, degree_log_bound);
+
+    let polynomial = DensePolynomial::<F>::from_coefficients_vec(
+        (0..16).map(|x| F::from(x)).collect()
+    );
+    let prover = FriProver::new()
+
 }
 
 #[cfg(test)]
