@@ -172,7 +172,7 @@ impl FriProver {
         let evaluations: Vec<F> = domain.into_iter().map(
             |x| polynomial.evaluate(x)
         ).collect();
-
+        
 
         // NOT ZERO KNOWLEDGE
         // values is list where the i-th entry is hash(f(generator^i))
@@ -214,22 +214,21 @@ impl FriProver {
 
     fn execute_prover_commit_round(&mut self, round_index: usize, folding_challenge: Option<F>) -> [u8; 32] {
 
-        println!("Prover round: {}", round_index);
         let polynomial_commitment;
         if round_index == 0 {
             polynomial_commitment = self.f_merkle_tree[0].root().unwrap();
         } else {
             let folded_polynomial = self.fold_polynomial(&self.f[round_index-1], folding_challenge.unwrap());
-        println!("Folded polynomial: {:?}", folded_polynomial);
+            println!("Folded polynomial: {:?}", folded_polynomial);
             let (polynomial_evaluations, polynomial_merkle_tree) = self.commit_polynomial(&folded_polynomial, &self.params.smooth_multiplicative_subgroup[round_index]);
-        self.f.push(folded_polynomial);
+            self.f.push(folded_polynomial);
             polynomial_commitment = polynomial_merkle_tree.root().unwrap();
             
             self.f_merkle_tree.push(polynomial_merkle_tree); // TODO optimize final round
             self.f_evaluation.push(polynomial_evaluations);
         }
         
-        println!("Commitment: {:?}", polynomial_commitment);
+        //println!("Commitment: {:?}", polynomial_commitment);
         return polynomial_commitment;
     }
 
@@ -247,7 +246,7 @@ impl FriProver {
 }
 
 
-
+#[derive(Debug)]
 pub struct FriVerifier {
     params: Arc<FriParams>,
     f_merkle_root: Vec<[u8; 32]>,
@@ -357,9 +356,14 @@ impl FriVerifier {
 
         println!("Performing round consistency checks...");
         for index in 0..self.params.num_rounds {
-            let p = self.interpolate(&coset_evaluation[index], self.params.generator[index].pow(BigInt::<1>::from(self.querying_challenge.unwrap() as u64)));
+            
+            let step_size = 2usize.pow(self.params.k[index] - self.params.eta);
+
+            let new_offset_index = BigInt::<1>::from((self.querying_challenge.unwrap() % step_size) as u64);
+            let p = self.interpolate(&coset_evaluation[index], self.params.generator[index].pow(new_offset_index));
             if p.evaluate(&self.folding_challenge[index]) != coset_evaluation[index+1][0] {
                 println!("The equation f^({})(s^({})) = p^({index})(x^({index})) did not hold. Aborting...", index+1, index+1);
+                return false;
             }
         }
         
@@ -390,14 +394,17 @@ impl FriProtocol {
         // PHASE 1: Commitment.
 
         let mut folding_challenge = None;
-
+        
         // Prover accepts verifier challenge and generates commitment to the first folded polynomial.
 
         for round_index in 0..=self.prover.params.num_rounds {
             
             // During round 0, the folding challenge is None and the prover commits to the initial polynomial.
             // In subsequent rounds, the folding challenge is computed by the verifier at the end of the last round.
+            println!("Round number: {round_index}");
             let polynomial_commitment = self.prover.execute_prover_commit_round(round_index, folding_challenge);
+
+            println!("{}", draw_protocol_box(&format!("Commitment to polynomial {}", round_index), ArrowDirection::Left));
 
             // In each round, the verifier records the polyomial commitment.
             // During the last round, the verifier outputs no verifier challenge (None). For each other round, it outputs a random challenge.
@@ -417,6 +424,7 @@ impl FriProtocol {
         } else {
             println!("REJECT");
         }
+        println!("querying challenge: {}", self.verifier.querying_challenge.unwrap());
 
     }
 }
@@ -427,6 +435,91 @@ impl FriProtocol {
 /// TODO make zero knowledge
 fn value_to_merkle_leaf(value: &F ) -> [u8; 32] {
     Sha256::hash(&value.into_bigint().to_bytes_be())
+}
+
+/// Direction for arrows in protocol visualization
+#[derive(Debug, Clone, Copy)]
+pub enum ArrowDirection {
+    Left,
+    Right,
+}
+
+/// Draws an ASCII art box with centered text and optional arrows
+/// 
+/// # Arguments
+/// * `message` - The text to display in the box
+/// * `arrow_direction` - Direction for the arrow (Left or Right)
+/// 
+/// # Returns
+/// * A String containing the ASCII art representation
+/// 
+/// # Panics
+/// * If the message length exceeds the maximum allowed length
+/// 
+/// # Example
+/// ```
+/// let result = draw_protocol_box("Merkle commitments", ArrowDirection::Left);
+/// // Output:
+/// //          +--------------------+          
+/// //V  <<-----| Merkle commitments |-------  P
+/// //          +--------------------+          
+/// ```
+pub fn draw_protocol_box(message: &str, arrow_direction: ArrowDirection) -> String {
+    const BOX_WIDTH: usize = 30; // Fixed width for the box content
+    const MAX_MESSAGE_LENGTH: usize = BOX_WIDTH; // Maximum allowed message length
+    
+    // Check if message exceeds maximum length
+    if message.len() > MAX_MESSAGE_LENGTH {
+        panic!("Message length {} exceeds maximum allowed length {}", message.len(), MAX_MESSAGE_LENGTH);
+    }
+    
+    // Calculate padding to center the message
+    let message_len = message.len();
+    let total_padding = BOX_WIDTH - message_len;
+    let left_padding = total_padding / 2;
+    let right_padding = total_padding - left_padding;
+    
+    // Build the centered message line
+    let mut message_line = String::new();
+    message_line.push_str("| ");
+    message_line.push_str(&" ".repeat(left_padding));
+    message_line.push_str(message);
+    message_line.push_str(&" ".repeat(right_padding));
+    message_line.push_str(" |");
+    
+    // Build the arrow line based on direction
+    let mut arrow_line = String::new();
+    match arrow_direction {
+        ArrowDirection::Left => {
+            arrow_line.push_str("V  <<-----");
+            arrow_line.push_str(&message_line);
+            arrow_line.push_str("-------  P");
+        }
+        ArrowDirection::Right => {
+            arrow_line.push_str("V  -------");
+            arrow_line.push_str(&message_line);
+            arrow_line.push_str("----->>  P");
+        }
+    }
+    
+    // Build the complete ASCII art
+    let mut result = String::new();
+    
+    // Top border
+    result.push_str("          +");
+    result.push_str(&"-".repeat(BOX_WIDTH + 2));
+    result.push_str("+          \n");
+    
+    // Arrow and message line
+    result.push_str(&arrow_line);
+    result.push_str("\n");
+    
+    // Bottom border
+    result.push_str("          +");
+    result.push_str(&"-".repeat(BOX_WIDTH + 2));
+    result.push_str("+          \n");
+    
+    result
 }
 
 
@@ -516,6 +609,38 @@ pub mod tests {
         assert_eq!(polynomial, reconstructed_polynomial);
     }
 
+    #[test]
+    fn test_ascii_art_visualization() {
+        // Test left arrow direction
+        let left_result = draw_protocol_box("Merkle commitments", ArrowDirection::Left);
+        assert!(left_result.contains("V  <<-----"));
+        assert!(left_result.contains("-------  P"));
+        assert!(left_result.contains("|       Merkle commitments       |"));
+        
+        // Test right arrow direction
+        let right_result = draw_protocol_box("Query phase", ArrowDirection::Right);
+        assert!(right_result.contains("V  -------"));
+        assert!(right_result.contains("----->>  P"));
+        assert!(right_result.contains("|          Query phase           |"));
+        
+        // Test maximum length message (should work)
+        let max_length_result = draw_protocol_box("123456789012345678901234567890", ArrowDirection::Right);
+        assert!(max_length_result.contains("123456789012345678901234567890"));
+        
+        println!("ASCII art visualization test passed!");
+        println!("Left arrow example:");
+        println!("{}", left_result);
+        println!("Right arrow example:");
+        println!("{}", right_result);
+        println!("Max length example:");
+        println!("{}", max_length_result);
+    }
+
+    #[test]
+    #[should_panic(expected = "Message length 41 exceeds maximum allowed length 30")]
+    fn test_ascii_art_overflow() {
+        // This should panic because the message is too long
+        println!("{}", draw_protocol_box("This message is wayyyyyyyyyyyyy too long!", ArrowDirection::Left));
     }
 }
 
