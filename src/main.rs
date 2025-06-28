@@ -111,6 +111,7 @@ impl FriParams {
         }
     }
 }
+
 pub struct FriProver {
     params: Arc<FriParams>,
     f: Vec<DensePolynomial<F>>,
@@ -193,9 +194,11 @@ impl FriProver {
         
         // Recall that the i-th smooth multiplicative subgroup has order 2^{k[i]}, while homomorphism_kernel has order 2^eta.
         let step_size = 2usize.pow(self.params.k[index] - self.params.eta);
-        let exponents: Vec<usize> = (0..self.params.two_to_the_eta).map(
+        let mut exponents: Vec<usize> = (0..self.params.two_to_the_eta).map(
             |x| (exponent_offset + x * step_size) % (2usize.pow(self.params.k[index]))
         ).collect();
+
+        exponents.sort();
 
         println!("Calculated exponents for polynomial {index}: {:?}", exponents);
 
@@ -335,12 +338,17 @@ impl FriVerifier {
             let leaf_hashes: Vec<[u8;32]> = coset_evaluation[index].iter().map(
                 |x| value_to_merkle_leaf(x)
             ).collect();
-            let exponents: Vec<usize> = (0..self.params.two_to_the_eta).map(
+            let mut exponents: Vec<usize> = (0..self.params.two_to_the_eta).map(
                 |x| (self.querying_challenge.unwrap() + x * step_size) % (2usize.pow(self.params.k[index]))
             ).collect();
-            println!("Verifier-computed exponents for polynomial {index}: {:?}", exponents);
-            println!("Received evaluation claims for polynomial {index}: {:?}", coset_evaluation[index]);
-            if !merkle_proof[index].verify(self.f_merkle_root[index], &exponents, &leaf_hashes, 2usize.pow(self.params.k[index])) {
+
+            exponents.sort();
+            //println!("Verifier-computed exponents for polynomial {index}: {:?}", exponents);
+            //println!("Received evaluation claims for polynomial {index}: {:?}", coset_evaluation[index]);
+            println!("Verifier-computed leaf indices: {:?}", exponents);
+            let total_leaves_count = 2usize.pow(self.params.k[index]);
+            println!("Verifier-computed total leaf count: {}", total_leaves_count);
+            if !merkle_proof[index].verify(self.f_merkle_root[index], &exponents, &leaf_hashes, total_leaves_count) {
                 println!("The merkle proof in round {index} did not verify. Aborting...");
                 return false;
             }
@@ -426,7 +434,7 @@ fn value_to_merkle_leaf(value: &F ) -> [u8; 32] {
 fn main() {
     let eta = 2;
     let rate_parameter = 2;
-    let degree_log_bound = 2;
+    let degree_log_bound = 4;
     let num_repetitions = 3;
 
     let polynomial = DensePolynomial::<F>::from_coefficients_vec(
