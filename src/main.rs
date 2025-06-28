@@ -194,21 +194,24 @@ impl FriProver {
         
         // Recall that the i-th smooth multiplicative subgroup has order 2^{k[i]}, while homomorphism_kernel has order 2^eta.
         let step_size = 2usize.pow(self.params.k[index] - self.params.eta);
-        let mut exponents: Vec<usize> = (0..self.params.two_to_the_eta).map(
+        let original_exponents: Vec<usize> = (0..self.params.two_to_the_eta).map(
             |x| (exponent_offset + x * step_size) % (2usize.pow(self.params.k[index]))
         ).collect();
 
-        exponents.sort();
+        println!("Calculated exponents for polynomial {index}: {:?}", original_exponents);
 
-        println!("Calculated exponents for polynomial {index}: {:?}", exponents);
-
-        let coset_evaluations = exponents.iter().map(
+        // Get evaluations in the original order (for interpolation)
+        let coset_evaluations = original_exponents.iter().map(
             |exponent| self.f_evaluation[index][*exponent]
         ).collect();
 
         println!("Calculated coset evaluations for polynomial {index}: {:?}", coset_evaluations);
 
-        let merkle_proof = self.f_merkle_tree[index].proof(&exponents);
+        // Sort exponents for Merkle proof generation
+        let mut sorted_exponents = original_exponents.clone();
+        sorted_exponents.sort();
+
+        let merkle_proof = self.f_merkle_tree[index].proof(&sorted_exponents);
         return (coset_evaluations, merkle_proof);
     }
 
@@ -326,7 +329,6 @@ impl FriVerifier {
     }
 
     fn execute_verifier_query_round_part_two(&mut self, coset_evaluation: Vec<Vec<F>>, merkle_proof: Vec<MerkleProof<Sha256>>) -> bool {
-
         println!("Verifying merkle proofs...");
         println!("number of coset_evaluation vecs: {}", coset_evaluation.len());
         println!("number of merkle proofs: {}", merkle_proof.len());
@@ -334,33 +336,43 @@ impl FriVerifier {
             // Verify the received merkle proofs.
             // Recall that the i-th smooth multiplicative subgroup has order 2^{k[i]}, while homomorphism_kernel has order 2^eta.
             let step_size = 2usize.pow(self.params.k[index] - self.params.eta);
-            let leaf_hashes: Vec<[u8;32]> = coset_evaluation[index].iter().map(
-                |x| value_to_merkle_leaf(x)
-            ).collect();
-            let mut exponents: Vec<usize> = (0..self.params.two_to_the_eta).map(
+            let original_exponents: Vec<usize> = (0..self.params.two_to_the_eta).map(
                 |x| (self.querying_challenge.unwrap() + x * step_size) % (2usize.pow(self.params.k[index]))
             ).collect();
-
-            exponents.sort();
-            //println!("Verifier-computed exponents for polynomial {index}: {:?}", exponents);
-            //println!("Received evaluation claims for polynomial {index}: {:?}", coset_evaluation[index]);
-            println!("Verifier-computed leaf indices: {:?}", exponents);
+            
+            // Sort the exponents for Merkle proof verification
+            let mut sorted_exponents = original_exponents.clone();
+            sorted_exponents.sort();
+            
+            // Create a mapping from sorted index to original index
+            let mut sorted_to_original = vec![0; self.params.two_to_the_eta];
+            for (i, &sorted_idx) in sorted_exponents.iter().enumerate() {
+                for (j, &orig_idx) in original_exponents.iter().enumerate() {
+                    if sorted_idx == orig_idx {
+                        sorted_to_original[i] = j;
+                        break;
+                    }
+                }
+            }
+            
+            // Reorder the leaf hashes to match the sorted indices
+            let mut sorted_leaf_hashes = vec![[0u8; 32]; self.params.two_to_the_eta];
+            for (i, &original_idx) in sorted_to_original.iter().enumerate() {
+                sorted_leaf_hashes[i] = value_to_merkle_leaf(&coset_evaluation[index][original_idx]);
+            }
+            
+            println!("Verifier-computed leaf indices: {:?}", sorted_exponents);
             let total_leaves_count = 2usize.pow(self.params.k[index]);
             println!("Verifier-computed total leaf count: {}", total_leaves_count);
-            if !merkle_proof[index].verify(self.f_merkle_root[index], &exponents, &leaf_hashes, total_leaves_count) {
+            if !merkle_proof[index].verify(self.f_merkle_root[index], &sorted_exponents, &sorted_leaf_hashes, total_leaves_count) {
                 println!("The merkle proof in round {index} did not verify. Aborting...");
                 return false;
             }
-
         }
 
         println!("Performing round consistency checks...");
         for index in 0..self.params.num_rounds {
-            
-            let step_size = 2usize.pow(self.params.k[index] - self.params.eta);
-
-            let new_offset_index = BigInt::<1>::from((self.querying_challenge.unwrap() % step_size) as u64);
-            let p = self.interpolate(&coset_evaluation[index], self.params.generator[index].pow(new_offset_index));
+            let p = self.interpolate(&coset_evaluation[index], self.params.generator[index].pow(BigInt::<1>::from(self.querying_challenge.unwrap() as u64)));
             if p.evaluate(&self.folding_challenge[index]) != coset_evaluation[index+1][0] {
                 println!("The equation f^({})(s^({})) = p^({index})(x^({index})) did not hold. Aborting...", index+1, index+1);
                 return false;
